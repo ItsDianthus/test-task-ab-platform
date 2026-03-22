@@ -1,0 +1,38 @@
+# HTTP Client (JetBrains / VS Code REST Client)
+# Переменная baseUrl — задайте в окружении клиента или подставьте вручную.
+@baseUrl = http://localhost:8080
+
+### Health
+GET {{baseUrl}}/health
+
+### Ready
+GET {{baseUrl}}/ready
+
+### List flags
+GET {{baseUrl}}/v1/flags
+
+### Decide (публичный по смыслу; без обязательных заголовков)
+POST {{baseUrl}}/v1/decide
+Content-Type: application/json
+
+{
+  "subject_id": "u1",
+  "attributes": { "platform": "ios" },
+  "flag_keys": ["my_flag"]
+}
+
+### Admin — список типов событий
+GET {{baseUrl}}/v1/admin/event-types
+X-User-ID: admin
+X-Role: admin
+
+### Admin — создать пользователя
+POST {{baseUrl}}/v1/admin/users
+Content-Type: application/json
+X-User-ID: admin
+X-Role: admin
+
+{
+  "id": "reviewer-1",
+  "role": "approver"
+}

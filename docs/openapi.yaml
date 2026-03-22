@@ -1,0 +1,976 @@
+openapi: 3.0.3
+info:
+  title: Lotty A/B & feature flags API
+  description: |
+    HTTP API платформы для А/Б тестирования.
+
+    **Идентификация (демо):** заголовки `X-User-ID` и `X-Role`.
+    Если `X-Role` не передан, роль берётся из записи пользователя в БД по `X-User-ID`
+    (по умолчанию `X-User-ID` пустой → `"viewer"`).
+    Роли: `admin`, `experimenter`, `approver`, `viewer`.
+
+    Ошибки: JSON `{ "error": "<текст>" }` со статусом 400/401/403/404/405/500 и т.д.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8080
+    description: Локальный сервер (порт задаётся `APP_PORT`, по умолчанию 8080)
+
+tags:
+  - name: health
+  - name: flags
+  - name: experiments
+  - name: decide
+  - name: events
+  - name: reports
+  - name: admin
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      summary: Liveness
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusBody"
+
+  /ready:
+    get:
+      tags: [health]
+      summary: Readiness
+      responses:
+        "200":
+          description: Готов принимать трафик
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusBody"
+        "503":
+          description: Сервис ещё поднимается
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: starting
+
+  /v1/flags:
+    get:
+      tags: [flags]
+      summary: Список флагов
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Flag"
+        "500":
+          $ref: "#/components/responses/Error"
+    post:
+      tags: [flags]
+      summary: Создать флаг (idempotent при `Idempotency-Key`)
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FlagCreate"
+      responses:
+        "201":
+          description: Создан
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Flag"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "405":
+          description: Method not allowed
+
+  /v1/flags/{key}:
+    get:
+      tags: [flags]
+      summary: Флаг по ключу
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Flag"
+        "404":
+          $ref: "#/components/responses/Error"
+        "405":
+          description: Method not allowed
+
+  /v1/flags/{key}/default:
+    patch:
+      tags: [flags]
+      summary: Обновить значение по умолчанию
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [default_value]
+              properties:
+                default_value:
+                  description: JSON-значение (тип должен совпадать с типом флага)
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Flag"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+        "405":
+          description: Method not allowed
+
+  /v1/experiments:
+    get:
+      tags: [experiments]
+      summary: Список экспериментов
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Experiment"
+    post:
+      tags: [experiments]
+      summary: Создать эксперимент (idempotent при `Idempotency-Key`)
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExperimentCreate"
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Experiment"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+
+  /v1/experiments/{experimentId}:
+    get:
+      tags: [experiments]
+      summary: Эксперимент по id
+      parameters:
+        - name: experimentId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Experiment"
+        "401":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /v1/experiments/{experimentId}/update:
+    post:
+      tags: [experiments]
+      summary: Обновить конфиг (черновик / не в frozen-состоянии по правилам сервиса)
+      parameters:
+        - name: experimentId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExperimentConfigUpdate"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Experiment"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+
+  /v1/experiments/{experimentId}/submit-review:
+    post:
+      tags: [experiments]
+      parameters:
+        - name: experimentId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Experiment"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+
+  /v1/experiments/{experimentId}/approve:
+    post:
+      tags: [experiments]
+      parameters:
+        - name: experimentId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                comment:
+                  type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Experiment"
+        "400":
+          $ref: "#/components/responses/Error"
+        "401":
+          $ref: "#/components/responses/Error"
+
+  /v1/experiments/{experimentId}/request-changes:
+    post:
+      tags: [experiments]
+      parameters:
+        - name: experimentId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                comment:
+                  type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Experiment"
+
+  /v1/experiments/{experimentId}/reject:
+    post:
+      tags: [experiments]
+      parameters:
+        - name: experimentId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                comment:
+                  type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Experiment"
+
+  /v1/experiments/{experimentId}/start:
+    post:
+      tags: [experiments]
+      parameters:
+        - name: experimentId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Experiment"
+
+  /v1/experiments/{experimentId}/pause:
+    post:
+      tags: [experiments]
+      parameters:
+        - name: experimentId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Experiment"
+
+  /v1/experiments/{experimentId}/resume:
+    post:
+      tags: [experiments]
+      parameters:
+        - name: experimentId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Experiment"
+
+  /v1/experiments/{experimentId}/complete:
+    post:
+      tags: [experiments]
+      parameters:
+        - name: experimentId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                comment:
+                  type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Experiment"
+
+  /v1/decide:
+    post:
+      tags: [decide]
+      summary: Получить варианты для субъекта
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DecideRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [decisions]
+                properties:
+                  decisions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Decision"
+        "400":
+          $ref: "#/components/responses/Error"
+        "405":
+          description: Method not allowed
+
+  /v1/events/batch:
+    post:
+      tags: [events]
+      summary: Пакетная доставка событий
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [events]
+              properties:
+                events:
+                  type: array
+                  items:
+                    $ref: "#/components/schemas/EventIngest"
+      responses:
+        "200":
+          description: Итоги обработки батча
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventBatchResult"
+        "400":
+          $ref: "#/components/responses/Error"
+
+  /v1/reports/{experimentId}:
+    get:
+      tags: [reports]
+      summary: Отчёт по эксперименту
+      parameters:
+        - name: experimentId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: from
+          in: query
+          description: Начало интервала (RFC3339); иначе последние 24ч от now
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          description: Конец интервала (RFC3339)
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Report"
+        "400":
+          $ref: "#/components/responses/Error"
+        "404":
+          $ref: "#/components/responses/Error"
+
+  /v1/admin/users:
+    post:
+      tags: [admin]
+      summary: Создать/обновить пользователя (только admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, role]
+              properties:
+                id:
+                  type: string
+                role:
+                  $ref: "#/components/schemas/Role"
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+
+  /v1/admin/approver-policy:
+    post:
+      tags: [admin]
+      summary: Политика согласующих (только admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApproverPolicy"
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApproverPolicy"
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+
+  /v1/admin/event-types:
+    get:
+      tags: [admin]
+      summary: Список типов событий
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/EventType"
+    post:
+      tags: [admin]
+      summary: Создать тип события (только admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EventType"
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventType"
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+
+  /v1/admin/replay:
+    post:
+      tags: [admin]
+      summary: Пересчёт атрибуции за интервал (только admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [experiment_id, from, to]
+              properties:
+                experiment_id:
+                  type: string
+                from:
+                  type: string
+                  format: date-time
+                to:
+                  type: string
+                  format: date-time
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rebuilt:
+                    type: integer
+                    description: Число пересобранных attributed-событий (смысл поля в коде сервиса)
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+
+  /v1/admin/audit/{entityType}/{entityId}:
+    get:
+      tags: [admin]
+      summary: Аудит по сущности (admin или viewer)
+      parameters:
+        - name: entityType
+          in: path
+          required: true
+          schema:
+            type: string
+            example: experiment
+        - name: entityId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AuditLog"
+        "400":
+          $ref: "#/components/responses/Error"
+        "403":
+          $ref: "#/components/responses/Error"
+
+components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema:
+        type: string
+
+  responses:
+    Error:
+      description: Ошибка
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+
+  schemas:
+    ErrorBody:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    StatusBody:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, ready, starting]
+
+    Role:
+      type: string
+      enum: [admin, experimenter, approver, viewer]
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+        role:
+          $ref: "#/components/schemas/Role"
+
+    FlagCreate:
+      type: object
+      required: [key, type, default_value]
+      properties:
+        key:
+          type: string
+        type:
+          type: string
+          enum: [string, number, bool]
+        default_value:
+          description: JSON literal
+        description:
+          type: string
+
+    Flag:
+      allOf:
+        - $ref: "#/components/schemas/FlagCreate"
+        - type: object
+          properties:
+            owner:
+              type: string
+            created_at:
+              type: string
+              format: date-time
+            updated_at:
+              type: string
+              format: date-time
+
+    Variant:
+      type: object
+      required: [name, value, weight, is_control]
+      properties:
+        name:
+          type: string
+        value:
+          description: JSON literal
+        weight:
+          type: integer
+        is_control:
+          type: boolean
+
+    GuardrailRule:
+      type: object
+      required: [metric_key, threshold, window_seconds, action]
+      properties:
+        metric_key:
+          type: string
+        threshold:
+          type: number
+        window_seconds:
+          type: integer
+        action:
+          type: string
+          enum: [pause]
+
+    RuleNode:
+      type: object
+      properties:
+        op:
+          type: string
+        field:
+          type: string
+        value: {}
+        values:
+          type: array
+          items: {}
+        children:
+          type: array
+          items:
+            $ref: "#/components/schemas/RuleNode"
+
+    ExperimentCreate:
+      type: object
+      required: [flag_key, name, audience_percent, variants]
+      properties:
+        flag_key:
+          type: string
+        name:
+          type: string
+        audience_percent:
+          type: integer
+        variants:
+          type: array
+          items:
+            $ref: "#/components/schemas/Variant"
+        targeting:
+          $ref: "#/components/schemas/RuleNode"
+        guardrails:
+          type: array
+          items:
+            $ref: "#/components/schemas/GuardrailRule"
+
+    ExperimentConfigUpdate:
+      type: object
+      required: [audience_percent, variants]
+      properties:
+        audience_percent:
+          type: integer
+        variants:
+          type: array
+          items:
+            $ref: "#/components/schemas/Variant"
+        targeting:
+          $ref: "#/components/schemas/RuleNode"
+        guardrails:
+          type: array
+          items:
+            $ref: "#/components/schemas/GuardrailRule"
+
+    Experiment:
+      type: object
+      properties:
+        id:
+          type: string
+        flag_key:
+          type: string
+        name:
+          type: string
+        owner_id:
+          type: string
+        status:
+          type: string
+          description: draft, in_review, approved, running, paused, completed, archived, rejected
+        version:
+          type: integer
+        audience_percent:
+          type: integer
+        variants:
+          type: array
+          items:
+            $ref: "#/components/schemas/Variant"
+        targeting:
+          $ref: "#/components/schemas/RuleNode"
+        guardrails:
+          type: array
+          items:
+            $ref: "#/components/schemas/GuardrailRule"
+        versions:
+          type: array
+          items:
+            type: object
+        review_history:
+          type: array
+          items:
+            type: object
+        guardrail_log:
+          type: array
+          items:
+            type: object
+        decision_comment:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    DecideRequest:
+      type: object
+      properties:
+        subject_id:
+          type: string
+        attributes:
+          type: object
+          additionalProperties: true
+        flag_keys:
+          type: array
+          items:
+            type: string
+
+    Decision:
+      type: object
+      properties:
+        decision_id:
+          type: string
+        subject_id:
+          type: string
+        flag_key:
+          type: string
+        value:
+          description: JSON literal
+        experiment_id:
+          type: string
+        variant_name:
+          type: string
+        config_version:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+
+    EventIngest:
+      type: object
+      required: [event_id, type, subject_id]
+      properties:
+        event_id:
+          type: string
+        type:
+          type: string
+        subject_id:
+          type: string
+        decision_id:
+          type: string
+        occurred_at:
+          type: string
+          format: date-time
+          description: Если не задано — время приёма на сервере
+        properties:
+          type: object
+          additionalProperties: true
+
+    EventBatchResult:
+      type: object
+      properties:
+        accepted:
+          type: integer
+        duplicate:
+          type: integer
+        rejected:
+          type: integer
+        errors:
+          type: array
+          items:
+            type: string
+
+    VariantReport:
+      type: object
+      properties:
+        variant_name:
+          type: string
+        metrics:
+          type: object
+          additionalProperties:
+            type: number
+
+    Report:
+      type: object
+      properties:
+        experiment_id:
+          type: string
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        variants:
+          type: array
+          items:
+            $ref: "#/components/schemas/VariantReport"
+
+    ApproverPolicy:
+      type: object
+      properties:
+        experimenter_id:
+          type: string
+        approver_ids:
+          type: array
+          items:
+            type: string
+        min_approvals:
+          type: integer
+
+    EventType:
+      type: object
+      required: [key]
+      properties:
+        key:
+          type: string
+        description:
+          type: string
+        requires_exposure:
+          type: boolean
+        archived:
+          type: boolean
+
+    AuditLog:
+      type: object
+      properties:
+        id:
+          type: string
+        entity_type:
+          type: string
+        entity_id:
+          type: string
+        action:
+          type: string
+        actor_id:
+          type: string
+        payload:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
